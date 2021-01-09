@@ -1,0 +1,5 @@
+
+LIBRARY IDECKVDD
+EXPORTS
+Init
+Dispatch
