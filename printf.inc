@@ -28,6 +28,7 @@ i64toa PROC stdcall uses esi edi number:qword, outb:ptr, base:dword
 	jns @F
 	neg esi
 	neg eax
+	sbb esi,0
 	mov ch,'-'
 @@:
 	mov ebx,outb
@@ -82,7 +83,7 @@ nextchar:
 	jmp nextchar
 done:
 	popad
-	xor eax,eax
+;	xor eax,eax
 	ret 
 
 formatitem:

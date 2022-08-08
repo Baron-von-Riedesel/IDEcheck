@@ -1,19 +1,17 @@
 
 ;--- IDECKVDD is a NTVDM VDD
-;--- needs JWasm/Masm v6 and Win32Inc include files
+;--- needs JWasm/Masm v6 and HXDEV include files
 
 	.386
 	.MODEL FLAT, stdcall
 	option casemap:none
 	option proc:private
 
-;WIN32_LEAN_AND_MEAN equ 1
-_WIN32_WINNT	equ 0500h
 	.nolist
-	.nocref
-	include windows.inc
+	include winbase.inc
 	include winioctl.inc
 	include vddsvc.inc
+	include winuser.inc
 	.cref
 	.list
 
@@ -98,22 +96,22 @@ local sym,xxx
 sym db string,0
 	.code
 	exitm <offset sym>
-	endm
+endm
 
-@DbgOutC	macro xx
+@DbgOutC macro xx
 ifdef _DEBUG
 	invoke OutputDebugString, CStr(<xx>)
 endif
-	endm
+endm
 
-@DbgOut	macro xx:REQ, parms:VARARG
+@DbgOut macro xx:REQ, parms:VARARG
 ifdef _DEBUG
 	pushad
 	invoke wsprintf, addr szText, CStr(<xx>), parms
 	invoke OutputDebugString, addr szText
 	popad
 endif
-	endm
+endm
 
 	.data
 

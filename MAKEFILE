@@ -1,18 +1,12 @@
 
 # NMAKE makefile, creates IDECHECK.EXE and IDECKVDD.DLL
-# tools:
-#             IDECHECK.EXE         IDECKVDD.DLL
-# ------------------------------------------------
-# assembler   JWasm | Masm         JWasm | Masm
-# linker      JWlink | MS link     JWlink | MS link
-# others      HXDEV                WinInc
+# using jwasm & jwlink
 
 PGM=IDECHECK.ASM
 NAME=$(PGM:.ASM=)
 NAME2=IDECKVDD
 
 HXDIR=\hx
-WININC=\WinInc
 
 !ifndef MASM
 MASM=0
@@ -33,36 +27,7 @@ LOPTD=debug c op cvp
 OUTDIR=RELEASE
 !endif
 
-AOPT=-nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD)
-!if $(MASM)
-ASM=@ml.exe $(AOPT)
-ASM2=@ml.exe $(AOPT) -I$(WININC)\Include
-!else
-ASM=@jwasm.exe $(AOPT)
-ASM2=@jwasm.exe $(AOPT) -I$(WININC)\Include
-!endif
-
-!if $(MSLINK)
-
-LOPTS=/OUT:$*.EXE /MAP /SUBSYSTEM:CONSOLE /FIXED:NO /STUB:$(HXDIR)\Bin\LOADPEX.BIN /STACK:0x1000 /OPT:NOWIN98
-
-LIBS2=/LIBPATH:$(WININC)\Lib kernel32.lib user32.lib ntvdm.lib
-LOPTS2=/OUT:$*.DLL /MAP /SUBSYSTEM:CONSOLE /DEF:IDECKVDD.DEF /OPT:NOWIN98
-
-LINK=@link.exe $(LOPTS) $*
-LINK2=@link.exe $*.obj $(LOPTS2) $(LIBS2)
-
-!else
-
-LOPTS=op quiet,map=$(OUTDIR)\$(NAME).map, stub=$(HXDIR)\bin\LOADPEX.BIN, stack=0x1000, dosseg
-
-LIBS2=LIBPATH $(WININC)\Lib Library kernel32.lib, user32.lib, ntvdm.lib
-LOPTS2=name $*.DLL op quiet,MAP=$(OUTDIR)\$(NAME2).map @WLINK.RSP
-
-LINK=@jwlink.exe $(LOPTD) format windows pe hx file $(OUTDIR)\$(NAME).obj $(LOPTS)
-LINK2=@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj $(LOPTS2) $(LIBS2)
-
-!endif
+LIBS2=LIBPATH $(HXDIR)\Lib Library dkrnl32.lib, duser32.lib, ntvdm.lib
 
 ALL: $(OUTDIR) $(OUTDIR)\$(NAME).EXE $(OUTDIR)\$(NAME2).DLL
 
@@ -70,17 +35,16 @@ $(OUTDIR):
 	@mkdir $(OUTDIR)
 
 $(OUTDIR)\$(NAME).exe: $(OUTDIR)\$(NAME).obj Makefile
-	$(LINK) 
-#	$(HXDIR)\Bin\patchPE.exe $(OUTDIR)\$(NAME).exe
+	@jwlink.exe $(LOPTD) format windows pe hx file $(OUTDIR)\$(NAME).obj op quiet,map=$(OUTDIR)\$(NAME).map, stub=$(HXDIR)\bin\LOADPEX.BIN, stack=0x1000, dosseg
 
 $(OUTDIR)\$(NAME).obj: $(NAME).asm
-	$(ASM) $(NAME).asm
+	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) $(NAME).asm
 
 $(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile
-	$(LINK2)
+	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @WLINK.RSP
 
 $(OUTDIR)\$(NAME2).obj: $(NAME2).asm
-	$(ASM2) $(NAME2).asm
+	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) -I$(HXDIR)\include $(NAME2).asm
 
 clean:
 	erase $(OUTDIR)\*.obj
