@@ -14,6 +14,7 @@
 ?SETHDIRQ equ 0	;grab HD IRQ (problem with native controllers!)
 ?NTSUPP   equ 1 ;support running on NT (use IDECKVDD.DLL)
 ?BIOSHD   equ 0 ;1=rely on 0040:0075 to contain # of HDs
+?SETINDOS equ 1 ;1=set inDOS flag if /PIO or /DMA is active
 
 @flat	equ <ds>
 cr		equ 13
@@ -216,6 +217,8 @@ drvtab label DRVPARM
 s2p1	DRVPARM <170h, 0h, 15>
 s2p2	DRVPARM <170h,10h, 15>
 
+;--- values for flags variable
+
 FL_REP		equ 01h	;/REP set
 FL_CHS		equ 02h	;/CHS set - use CHS mode
 FL_RES		equ 04h	;/RES set - reboot after program termination
@@ -269,7 +272,9 @@ maxsecs dd 0	;# of sectors ( either CHS or LBA )
 sectors dd 0	;sectors read so far
 rmStack dd 0	;real mode stack SSSS:0000 address
 
+if ?SETINDOS
 InDOS	df 0	;indos flag address
+endif
 if ?SETHDIRQ
 ohdirq	df 0
 endif
@@ -1050,62 +1055,64 @@ setirqmask endp
 
 SetIntVectors proc stdcall
 if ?SETINT08
-	mov bl,8
-	mov ax,204h
+	mov bl, 8
+	mov ax, 204h
 	int 31h
-	mov dword ptr [oint08+0],edx
-	mov word ptr [oint08+4],cx
-	mov ecx,cs
-	mov edx,offset i08rou
-	mov ax,205h
+	mov dword ptr [oint08+0], edx
+	mov word ptr [oint08+4], cx
+	mov ecx, cs
+	mov edx, offset i08rou
+	mov ax, 205h
 	int 31h
 endif
 if ?SETINT09
-	mov bl,9
-	mov ax,204h
+	mov bl, 9
+	mov ax, 204h
 	int 31h
-	mov dword ptr [oint09+0],edx
-	mov word ptr [oint09+4],cx
-	mov ecx,cs
-	mov edx,offset i09rou
-	mov ax,205h
+	mov dword ptr [oint09+0], edx
+	mov word ptr [oint09+4], cx
+	mov ecx, cs
+	mov edx, offset i09rou
+	mov ax, 205h
 	int 31h
 endif
 	test flags,FL_I13	;hook into in int 13h when reading DMA/PIO
 	jnz done
 if ?SETINT13
-	mov bl,13h
-	mov ax,204h
+	mov bl, 13h
+	mov ax, 204h
 	int 31h
-	mov dword ptr [oint13+0],edx
-	mov word ptr [oint13+4],cx
-	mov ecx,cs
-	mov edx,offset i13rou
-	mov ax,205h
+	mov dword ptr [oint13+0], edx
+	mov word ptr [oint13+4], cx
+	mov ecx, cs
+	mov edx, offset i13rou
+	mov ax, 205h
 	int 31h
 endif
-	in al,021h
-	mov [irqm1],al
-	in al,0A1h
-	mov [irqm2],al
-	or byte ptr [fMSaved],1
-	mov al,0FFh
+	test [flags], FL_I13
+	jnz @F
+	in al, 021h
+	mov [irqm1], al
+	in al, 0A1h
+	mov [irqm2], al
+	or byte ptr [fMSaved], 1
+	mov al, 0FFh
 	out 0A1h,al
-	mov al,0FCh
-	out 021h,al
-
+	mov al, 0FCh
+	out 021h, al
+@@:
 	test byte ptr [fUseIRQ],1
 	jz done
 if ?SETHDIRQ
 	call getirq
-	mov bl,al
-	mov ax,204h
+	mov bl, al
+	mov ax, 204h
 	int 31h
-	mov dword ptr [ohdirq+0],edx
-	mov word ptr [ohdirq+4],cx
-	mov ecx,cs
-	mov edx,offset irqrou
-	mov ax,205h
+	mov dword ptr [ohdirq+0], edx
+	mov word ptr [ohdirq+4], cx
+	mov ecx, cs
+	mov edx, offset irqrou
+	mov ax, 205h
 	int 31h
 endif
 	call setirqmask	;set mask for HD irq
@@ -1126,9 +1133,9 @@ int1A proc
 	mov [ebp-34h].RMCS.rSSSP, eax
 	mov [ebp-34h].RMCS.rFlags, 202h
 	mov edi, esp
-	mov bx,001Ah
-	mov cx,0
-	mov ax,0300h
+	mov bx, 01Ah
+	mov cx, 0
+	mov ax, 300h
 	int 31h
 	mov ah,byte ptr [ebp-34h].RMCS.rFlags
 	sahf
@@ -2024,7 +2031,7 @@ error:
 	align 4
 setudmamode endp
 
-;*** ctrl-c abfangen ***
+;*** set int 23h (ctrl-c)
 
 setctl proc near
 	push ds
@@ -2038,7 +2045,7 @@ setctl proc near
 	align 4
 setctl endp
 
-ir23 proc far
+ir23 proc
 	iretd
 	align 4
 ir23 endp
@@ -2081,12 +2088,18 @@ endif
 
 if ?SETINT13
 
+IRETS struct
+_eip	dd ?
+_cs		dd ?
+_efl	dd ?
+IRETS ends
+
 ;--- protected-mode int 13h
 
 i13rou proc far
 	mov ah,80h
-	stc
-	retf 4
+	or [esp].IRETS._efl,1	;set C
+	iretd
 	align 4
 i13rou endp
 
@@ -2228,10 +2241,12 @@ checkhd proc near
 
 	test flags,FL_I13
 	jnz @F
+if ?SETINDOS
 	push es
 	les ebx,[InDOS]
 	inc byte ptr es:[ebx]
 	pop es
+endif
 	call SaveDevStat		;does low-level IDE access
 @@:
 	mov dl,[stasec] 	;sector   => dl   CHS addressing only
@@ -2265,10 +2280,12 @@ done:
 	call resetmultsec		;multiple sector reset
 	cli
 	call RestoreDevStat
+if ?SETINDOS
 	push es
 	les ebx,[InDOS]
 	dec byte ptr es:[ebx]
 	pop es
+endif
 	sti
 exit:
 	ret
@@ -2283,17 +2300,17 @@ int13 proc
 	push edi
 	push ebx
 	push ebp
-	mov ebp,esp
-	sub esp,34h
+	mov ebp, esp
+	sub esp, 34h
 	mov [ebp-34h].RMCS.rAX, ax
 	mov [ebp-34h].RMCS.rDX, dx
 	mov [ebp-34h].RMCS.rSSSP, 0
 	mov [ebp-34h].RMCS.rFlags, 202h
-	cmp ah,42h
+	cmp ah, 42h
 	jz is42
-	cmp ah,02h
+	cmp ah, 02h
 	jz is02
-	cmp ah,48h
+	cmp ah, 48h
 	jz is48
 	mov [ebp-34h].RMCS.rES, 0
 	mov [ebp-34h].RMCS.rDI, 0
@@ -2334,13 +2351,13 @@ endif
 	mov [ebp-34h].RMCS.rDS, bx	;DS:SI -> DAP
 callit:
 	mov edi, esp
-	mov bx,0013h
-	mov cx,0
+	mov bx, 13h
+	mov cx, 0
 if ?NTSUPP
 	cmp hVDD,-1
 	jnz handleNT
 endif
-	mov ax,0300h
+	mov ax, 300h
 	int 31h
 doneNT:        
 	mov edx,[ebp-34h].RMCS.rEDX
@@ -3043,12 +3060,14 @@ else
 endif
 	.endif
 
+if ?SETINDOS
 	push es
 	mov ah,34h
 	int 21h 							; ES:[EBX] InDos-Flag
 	mov word ptr [InDOS+4],es
 	mov dword ptr [InDOS+0],ebx
 	pop es
+endif
 
 ;--- alloc the 128 kB sector buffer in DOS memory to ensure linear=physical
 

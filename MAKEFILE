@@ -1,6 +1,7 @@
 
 # NMAKE makefile, creates IDECHECK.EXE and IDECKVDD.DLL
 # using jwasm & jwlink
+# uses HXDEV for import libraries dkrnl32, duser32 & ntvdm
 
 PGM=IDECHECK.ASM
 NAME=$(PGM:.ASM=)
@@ -41,7 +42,7 @@ $(OUTDIR)\$(NAME).obj: $(NAME).asm
 	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) $(NAME).asm
 
 $(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile
-	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @WLINK.RSP
+	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @IDECHECK.LBC
 
 $(OUTDIR)\$(NAME2).obj: $(NAME2).asm
 	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) -I$(HXDIR)\include $(NAME2).asm
