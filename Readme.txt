@@ -16,7 +16,8 @@
  a Windows DOS box with the /I13 access method. To run in Windows NT/XP,
  IDECKVDD.DLL is needed.
  
- IDECHECK is a 32-bit DPMI program.
+ IDECHECK is a 32-bit DPMI program; it's stubbed with HDPMI, that will be
+ used if IDECHECK runs in true DOS.
 
  
  3. Usage
@@ -33,8 +34,8 @@
   /DMA - access HD directly with DMA. This requires a PCI 2.0c BIOS and
          a PCI Busmaster DMA controller.
   
-  /S:n - read n sectors per command. Default is 128, which is also the
-         maximum for Int 13h and DMA. For PIO, it is 256.
+  /S:n - read n sectors per command. Default is 127; the maximum for
+         Int 13h and DMA is 128, for PIO it's 256.
   /M:n - set multiple sector (PIO only, default is current value)
   /B:n - start read at sector n
   /L:n - stop after n sectors
@@ -68,7 +69,7 @@
  
  __/2022, 1.55: int 08/09 no longer intercepted.
  06/2022, 1.54: progress display reduced to a 3-4 times per second;
-                drive valic check relies on int 13h, ah=41h/48h/08h only.
+       drive valid check relies on int 13h, ah=41h/48h/08h only.
  01/2021, 1.53: default no of sectors to read changed to 127.
        display controller type and status more detailed.
  06/2012, 1.52: to make XP display direct writes to the console, a
@@ -96,7 +97,6 @@
 
  5. License
 
- IDECHECK is Freeware.
-
- Japheth
+ IDECHECK is distributed under the MIT license; see file license.txt for
+ details.
  

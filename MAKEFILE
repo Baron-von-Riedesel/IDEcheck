@@ -1,7 +1,9 @@
 
 # NMAKE makefile, creates IDECHECK.EXE and IDECKVDD.DLL
 # using jwasm & jwlink
-# uses HXDEV for import libraries dkrnl32, duser32 & ntvdm
+# uses HXDEV for
+#   - idecheck: stub loadpex.bin ( contains HDPMI32 )
+#   - ideckvdd: import libraries dkrnl32, duser32 & ntvdm; win32 include files
 
 PGM=IDECHECK.ASM
 NAME=$(PGM:.ASM=)
@@ -41,8 +43,8 @@ $(OUTDIR)\$(NAME).exe: $(OUTDIR)\$(NAME).obj Makefile
 $(OUTDIR)\$(NAME).obj: $(NAME).asm
 	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) $(NAME).asm
 
-$(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile
-	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @IDECHECK.LBC
+$(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile $(NAME2).lbc
+	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @$(NAME2).lbc
 
 $(OUTDIR)\$(NAME2).obj: $(NAME2).asm
 	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) -I$(HXDIR)\include $(NAME2).asm
@@ -51,3 +53,5 @@ clean:
 	erase $(OUTDIR)\*.obj
 	erase $(OUTDIR)\*.exe
 	erase $(OUTDIR)\*.dll
+	erase $(OUTDIR)\*.lst
+	erase $(OUTDIR)\*.map
