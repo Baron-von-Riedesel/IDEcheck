@@ -68,6 +68,7 @@
  4. History
  
  __/2022, 1.55: int 08/09 no longer intercepted.
+       check for busmaster enabled in PCI command register for /DMA.
  06/2022, 1.54: progress display reduced to a 3-4 times per second;
        drive valid check relies on int 13h, ah=41h/48h/08h only.
  01/2021, 1.53: default no of sectors to read changed to 127.

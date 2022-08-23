@@ -265,7 +265,7 @@ endif
 lasttick dd 0
 
 numsec	dd 127	;numbers of sectors to read in one call
-chssecs dd 0	;number of sectors in CHS mode
+chssecs dq 0	;number of sectors in CHS mode
 lbasecs dq 0	;number of sectors in LBA mode
 cursec	dd 0	;current sector number
 maxsecs dd 0	;# of sectors ( either CHS or LBA )
@@ -1255,6 +1255,7 @@ GetPCIInfo proc
 	jc exit
 @@:
 	cmp [dwPath],0	;invalid value returned by EDD BIOS?
+	stc
 	jz exit
 	push 0
 	call getpcireg
@@ -1268,6 +1269,14 @@ GetPCIInfo proc
 	movzx eax,cx
 	shr ecx,16
 	invoke printf, CStr("PCI %04X (%2u): command register=%X, status register=%X",lf), dwPath, edi, eax, ecx
+	test al,4
+	jnz @F
+	test [flags], FL_DMA
+	jz @F
+	invoke printf, CStr("Busmaster (bit 2) not enabled in command register! /DMA can't work",lf)
+	stc
+	ret
+@@:
 	push 2
 	call getpcireg ;get PCI 08-0B
 	jc error
@@ -1428,24 +1437,23 @@ getpciregb:
 GetPCIInfo endp
 
 ;--- display CHS/LBA information from config sector
+;--- ebx=config data
 
-SetMaxValues proc
-	mov ebx,offset configb
+DispCfgValues proc
 	movzx eax,[ebx].IDENTIFY_DEVICE_DATA.NumCylinders
 	movzx ecx,[ebx].IDENTIFY_DEVICE_DATA.NumHeads
 	movzx edx,[ebx].IDENTIFY_DEVICE_DATA.NumSectorsPerTrack
 	mov [maxcyl], eax
 	mov [maxhead], ecx
 	mov [maxsec], edx
-	invoke printf, CStr("CFG: cylinder/head/sector: %u/%u/%u - "), eax, ecx, edx
+	invoke printf, CStr("CFG 1/3/6: C/H/S: %u/%u/%u - "), eax, ecx, edx
 
 	mov eax,[maxsec]
-	mov ecx,[maxhead]
-	mul ecx
-	mov ecx,[maxcyl]
-	mul ecx
-	mov [chssecs],eax
-	invoke printf, CStr("%u sectors",lf), eax
+	mul [maxhead]
+	mul [maxcyl]
+	mov dword ptr [chssecs+0],eax
+	mov dword ptr [chssecs+4],edx
+	invoke printf, CStr("%lu sectors",lf), edx::eax
 
 	test [fLBA],1
 	jz @F
@@ -1460,20 +1468,20 @@ SetMaxValues proc
 @@:
 	ret
 	align 4
-SetMaxValues endp
+DispCfgValues endp
 
 setmaxsecs proc
 	mov eax,[reqsecs]	;sectors set with /L:xxx ?
 	and eax,eax
 	jnz done
-	mov eax,dword ptr lbasecs
+	mov eax,dword ptr [lbasecs]
 	cmp dword ptr lbasecs+4,0
 	jz @F
 	mov eax,-1
 @@:
 	test [fLBA],1
 	jnz @F
-	mov eax,[chssecs]
+	mov eax,dword ptr [chssecs]
 @@:
 	sub eax,[cursec]	;do we start at sector 0 or is /B:xxx set?
 	jnc done
@@ -1560,8 +1568,9 @@ noint1348:
 	pushad
 	mul edx
 	mul ecx
-	mov chssecs,eax
-	mov dword ptr lbasecs,eax
+	mov dword ptr [chssecs+0],eax
+	mov dword ptr [chssecs+4],0
+	mov dword ptr lbasecs+0,eax
 	mov dword ptr lbasecs+4,0
 	popad
 	invoke printf, CStr("Int 13: cylinder/head/sector: %u/%u/%u",lf), eax, ecx, edx
@@ -1592,7 +1601,8 @@ int1348ok:
 	mov edx, dword ptr @flat:[ebx].EDD.qwNumSecs+4
 	mov dword ptr lbasecs+0, eax
 	mov dword ptr lbasecs+4, edx
-	mov chssecs, eax
+	mov dword ptr chssecs+0, eax
+	mov dword ptr chssecs+4, edx
 	cmp @flat:[ebx].EDD.wSize,sizeof EDD20
 	jb noedd20
 	cmp @flat:[ebx].EDD20.lpCfg,-1
@@ -1754,6 +1764,8 @@ parprot proc stdcall
 	jnz nopci2
 	invoke printf, CStr("PCI v2.0c BIOS found",lf)
 	call GetPCIInfo
+	jnc pcidone
+	invoke printf, CStr("no PCI IDE controller found",lf)
 	jmp pcidone
 nopci2:
 	invoke printf, CStr("no PCI v2.0c BIOS found",lf)
@@ -1798,21 +1810,24 @@ pcidone:
 	jmp parprot_er
 @@:
 	invoke printf, addr szOk
+	cmp [fNoScan], 0
+	jnz @F
 	invoke printf, CStr("seek cylinder 0 ... ")
 	call setcyl0
-	mov ecx, offset szOk
-	jnc @F
-	mov ecx, offset szFail
+	.if CARRY?
+		invoke printf, offset szFail
+	.else
+		invoke printf, offset szOk
+	.endif
 @@:
-	invoke printf, ecx
 	mov ebx,offset configb
-	mov al,[ebx+2*49+1]
-	test al,1
+	mov ax,[ebx].IDENTIFY_DEVICE_DATA.Capabilities
+	test ah,1
 	setnz [fDMA]
-	test al,2
+	test ah,2
 	setnz [fLBA]
-	invoke SetMaxValues
-	movzx edx, word ptr [ebx+2*49]
+	invoke DispCfgValues
+	movzx edx, [ebx].IDENTIFY_DEVICE_DATA.Capabilities
 	movzx ecx, [fDMA]
 	movzx eax, [fLBA]
 	invoke printf, CStr("CFG  49=%4X: DMA=%u, LBA=%u",lf), edx, ecx, eax
@@ -1835,31 +1850,6 @@ pcidone:
 	invoke printf, CStr("CFG  51=%4X: PIO mode 0-2 timing: %u",lf), edx, eax
 	popad
 
-;--- multiword DMA modes
-
-	mov dx,[ebx+63*2]
-	movzx edx,dx
-	invoke printf, CStr("CFG  63=%4X: Multiword DMA modes supported:"), edx
-	xor eax,eax
-	mov dl,[ebx+63*2]
-	.while (dl)
-		shr dl,1
-		jnc @F
-		pushad
-		invoke printf, CStr(" %u"), eax
-		popad
-@@:
-		inc eax
-	.endw
-	movzx edx,byte ptr [ebx+63*2+1]
-	bsf eax,edx
-	jz @F
-	pushad
-	invoke printf, CStr(", current %u"), eax
-	popad
-@@:
-	invoke printf, CStr(lf)
-
 ;--- Advanced PIO modes
 
 	movzx eax,word ptr [ebx+53*2]
@@ -1868,8 +1858,7 @@ pcidone:
 	   invoke printf, CStr("CFG  53=%4X: No Advanced PIO modes supported",lf), eax
 	   jmp noapio
 	.endif
-
-	movzx ecx,word ptr [ebx+64*2]
+	movzx ecx,byte ptr [ebx+64*2]
 	invoke printf, CStr("CFG  64=%4X: Advanced PIO modes supported:"), ecx
 	mov eax,3
 	mov dl,[ebx+64*2]
@@ -1885,6 +1874,32 @@ pcidone:
 	invoke printf, CStr(lf)
 noapio:
 
+;--- multiword DMA modes
+
+	movzx edx,word ptr [ebx+63*2]
+	movzx edx,dx
+	invoke printf, CStr("CFG  63=%4X: Multiword DMA modes supported:"), edx
+	xor eax,eax
+	mov dl,[ebx+63*2]
+	.while (dl)
+		shr dl,1
+		jnc @F
+		pushad
+		invoke printf, CStr(" %u"), eax
+		popad
+@@:
+		inc eax
+	.endw
+	pushad
+	movzx edx,byte ptr [ebx+63*2+1]
+	bsf eax,edx
+	mov ecx, CStr(", active: none",lf)
+	jz @F
+	mov ecx, CStr(", active: %u",lf)
+@@:
+	invoke printf, ecx, eax
+	popad
+
 ;--- UDMA modes
 
 	movzx eax,word ptr [ebx+53*2]
@@ -1892,7 +1907,7 @@ noapio:
 	setnz cl
 	movzx ecx,cl
 	push ecx
-	invoke printf, CStr("CFG  53=%4X: UDMA valid[bit 2]=%u",lf), eax, ecx
+	invoke printf, CStr("CFG  53=%4X: UDMA valid?[bit 2]=%u",lf), eax, ecx
 	pop ecx
 	and ecx,ecx
 	jz noudma
@@ -1924,16 +1939,17 @@ noudmaset:
 @@:
 		inc eax
 	.endw
-	mov ecx, CStr(", current is %u", lf)
 	movzx edx,byte ptr [ebx+88*2+1]
 	bsf eax,edx
+	mov ecx, CStr(", active: %u", lf)
 	jnz @F
-	mov ecx, CStr(", current is none", lf)
+	mov ecx, CStr(", active: none", lf)
 @@:
 	pushad
 	invoke printf, ecx, eax
 	popad
 noudma:
+
 	mov ebx,offset configb
 	mov ax,[ebx+2*87]
 	and ah,0C0h
@@ -3011,8 +3027,6 @@ _GetTimeDiff endp
 
 main proc c
 
-local	str1[80]:byte
-
 	mov [flatsel],ds
 
 	call getparam
@@ -3064,8 +3078,8 @@ if ?SETINDOS
 	push es
 	mov ah,34h
 	int 21h 							; ES:[EBX] InDos-Flag
-	mov word ptr [InDOS+4],es
 	mov dword ptr [InDOS+0],ebx
+	mov word ptr [InDOS+4],es
 	pop es
 endif
 
@@ -3114,7 +3128,11 @@ endif
 	invoke printf, CStr(lf,"%u kB read buffer at linear address %X",lf), eax, [bufadr2]
 	pop ecx
 @@:
+if 0  ; for debugging
+	mov eax, 055AA55AAh
+else
 	xor eax,eax
+endif
 	rep stosd
 
 	call parprot 		; parameter protocol
@@ -3202,7 +3220,7 @@ main_ex:
 	mov cl,[configb+88*2+1]
 	movzx ecx,cl
 	bsr eax,ecx
-	jz @F
+	jz @F                   ;jump if no UDMA mode supported
 	mov [udmamode],al
 	call setudmamode
 @@:

@@ -52,6 +52,9 @@ endif
   Capabilities dw ?,?	;49-50
   ObsoleteWords51 dw ?,?;51-52
 if 0
+  ; bit 0: ???
+  ; bit 1: field 64 valid (advanced PIO modes)
+  ; bit 2: field 88 valid (UDMA modes)
   USHORT TranslationFieldsValid : 3;
   USHORT Reserved3 : 5;
   USHORT FreeFallControlSensitivity : 8;

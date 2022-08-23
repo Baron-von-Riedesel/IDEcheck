@@ -25,7 +25,7 @@ dwStartHigh	dd ?	;start sector high
 ;--- for EDD 3.0, there comes a 64bit flat transfer buffer address
 DAP ends
 
-EDD	struct
+EDD struct
 wSize	dw ?	;+0
 wFlags	dw ?	;+2
 dwCyl	dd ?	;+4
@@ -33,7 +33,7 @@ dwHeads	dd ?	;+8
 dwSecs	dd ?	;+12
 qwNumSecs dq ?	;+16
 wSecSiz	dw ?	;+24
-EDD	ends
+EDD ends
 
 ;*** DPMI real-mode call structure
 
@@ -115,6 +115,9 @@ endm
 
 	.data
 
+hDisk    dd -1
+dwDrive  dd -1
+
 	.data?
 
 ifdef _DEBUG
@@ -134,10 +137,9 @@ Init endp
 
 ;--- ES:EDI=RMCS
 
-accessdrive proc
+accessdrive proc uses ebx edi
 
 local	bFunc:dword
-local	hDisk:dword
 local	dwRead:dword
 local	dwBuffer:dword
 local	szDrv[32]:byte
@@ -149,69 +151,83 @@ local	dgx:DISK_GEOMETRY	;24
 	invoke getEDI
 	mov edi,eax
 	invoke getES
-	invoke VdmMapFlat, eax, edi, 1
+	invoke VdmMapFlat, eax, edi, VDM_PM
 	mov edi, eax
 
 	mov eax,[edi].RMCS.rEDX
 	movzx eax,al
 	sub al,80h
-	invoke wsprintf, addr szDrv, CStr("\\.\PhysicalDrive%u"), eax
+	.if hDisk == -1 || eax != dwDrive
+		mov dwDrive, eax
+		invoke wsprintf, addr szDrv, CStr("\\.\PhysicalDrive%u"), eax
+		.if hDisk != -1 
+			invoke CloseHandle, hDisk
+		.endif
+		invoke CreateFileA, addr szDrv, GENERIC_READ, FILE_SHARE_READ or FILE_SHARE_WRITE,\
+			0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0
+		mov hDisk, eax
+		cmp eax,-1
+		jz openerror
+	.endif
 
+;--- for int 13h, ah=42/43/48, there's a buffer at DS:SI
 	movzx ecx,word ptr [edi].RMCS.rSI
 	movzx eax,word ptr [edi].RMCS.rDS
 	shl eax,4
 	add eax, ecx
-	mov ebx, eax	;DS:SI=DAP
+	mov ebx, eax
 
 	mov eax, [edi].RMCS.rEAX
 	movzx eax,ah
 	mov bFunc, eax
 
-	@DbgOut <"accessdrive, func=%X, DAP=%X",13,10>, bFunc, ebx
-
-	xor ecx, ecx
-	mov eax, bFunc
-	and al,0Fh
-	.if ((eax == 2) || (eax == 3))
+	.if al == 42h || al == 43h
+		@DbgOut <"accessdrive, func=%X, DAP=%X",13,10>, bFunc, ebx
 		movzx ecx,word ptr [ebx].DAP.dwBuffer+0
 		movzx eax,word ptr [ebx].DAP.dwBuffer+2
 		shl eax,4
 		add eax, ecx
 		mov dwBuffer, eax
-		mov ecx, GENERIC_READ
-		.if (eax == 3)
-			or ecx, GENERIC_WRITE
-		.endif
 	.endif
-	invoke CreateFileA, addr szDrv, ecx, FILE_SHARE_READ or FILE_SHARE_WRITE,\
-		0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0
-	cmp eax,-1
-	jz openerror
-	mov hDisk, eax
+
+
 	mov eax, bFunc
-	and eax,0Fh
-	.if (eax == 8)
+	.if eax == 48h || eax == 8
 		invoke DeviceIoControl, hDisk, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, NULL,\
 			0, addr dgx, 112, addr dwRead, 0
 		.if (eax)
-			@DbgOut <"accessdrive, DDI type=%X",13,10>, ddi.DetectionType
-			push eax
 			mov eax,dword ptr dgx.Cylinders
 			mov ecx,dgx.TracksPerCylinder
 			mov edx,dgx.SectorsPerTrack
-			mov [ebx].EDD.dwCyl, eax
-			mov [ebx].EDD.dwHeads, ecx
-			mov [ebx].EDD.dwSecs, edx
-			mov eax,dword ptr DiskSize+0
-			mov edx,dword ptr DiskSize+4
-			mov ecx, dgx.BytesPerSector
-			mov [ebx].EDD.wSecSiz, cx
-			div ecx
-			mov [ebx].EDD.wSize, sizeof EDD
-			mov [ebx].EDD.wFlags, 0
-			mov dword ptr [ebx].EDD.qwNumSecs+0, eax
-			mov dword ptr [ebx].EDD.qwNumSecs+4, edx
-			pop eax
+			@DbgOut <"accessdrive, DDI type=%X",13,10>, ddi.DetectionType
+			.if bFunc == 48h
+				mov [ebx].EDD.dwCyl, eax
+				mov [ebx].EDD.dwHeads, ecx
+				mov [ebx].EDD.dwSecs, edx
+				mov eax,dword ptr DiskSize+0
+				mov edx,dword ptr DiskSize+4
+				mov ecx, dgx.BytesPerSector
+				mov [ebx].EDD.wSecSiz, cx
+				div ecx
+				mov [ebx].EDD.wSize, sizeof EDD
+				mov [ebx].EDD.wFlags, 0
+				mov dword ptr [ebx].EDD.qwNumSecs+0, eax
+				mov dword ptr [ebx].EDD.qwNumSecs+4, edx
+				mov eax, 1
+			.else
+				.if ecx >= 256 || eax >= 1024 || edx >= 64
+					xor eax, eax
+				.else
+					mov byte ptr [edi].RMCS.rECX+1, al
+					and ah,3
+					shl ah,6
+					or ah, dl
+					mov byte ptr [edi].RMCS.rECX, ah
+					mov byte ptr [edi].RMCS.rEDX+1, cl	;head
+					mov byte ptr [edi].RMCS.rEAX, 0
+					mov eax, 1
+				.endif
+			.endif
 		.endif
 	.else
 		mov eax, [ebx].DAP.dwStartLow
@@ -224,14 +240,12 @@ local	dgx:DISK_GEOMETRY	;24
 		movzx ecx,[ebx].DAP.wNumSec
 		shl ecx,9
 		.if (bFunc == 43h)
+			xor eax, eax
 ;			invoke WriteFile, hDisk, dwBuffer, ecx, addr dwRead, 0
 		.else
 			invoke ReadFile, hDisk, dwBuffer, ecx, addr dwRead, 0
 		.endif
 	.endif
-	push eax
-	invoke CloseHandle, hDisk
-	pop eax
 	and eax, eax
 	jz accerror
 	mov [edi].RMCS.rFlags,0
@@ -250,7 +264,7 @@ accessdrive endp
 ;--- function in bx
 ;--- bx=13: int 13h access
 
-Dispatch proc public uses ebx edi
+Dispatch proc public
 
 local	mbi:MEMORY_BASIC_INFORMATION
 
@@ -276,8 +290,12 @@ DllMain proc public hInstance:dword, reason:dword, lpReserved:dword
 	mov eax, reason
 	.if (eax == DLL_PROCESS_ATTACH)
 		@DbgOutC <"process attach",13,10>
-		mov eax,1
+		mov eax, 1
 	.elseif (eax == DLL_PROCESS_DETACH)
+		.if hDisk != -1
+			invoke CloseHandle, hDisk
+			mov hDisk, -1
+		.endif
 		@DbgOutC <"process detach",13,10>
 	.elseif (eax == DLL_THREAD_ATTACH)
 		@DbgOutC <"thread attach",13,10>
