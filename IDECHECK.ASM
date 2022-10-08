@@ -10,7 +10,7 @@
 
 ?SETINT08 equ 0	;grab timer IRQ
 ?SETINT09 equ 0	;grab keyboard IRQ
-?SETINT13 equ 1	;grab int 13h (protected-mode only)
+?SETINT13 equ 1	;grab int 13h if PIO/DMA (protected-mode only)
 ?SETHDIRQ equ 0	;grab HD IRQ (problem with native controllers!)
 ?NTSUPP   equ 1 ;support running on NT (use IDECKVDD.DLL)
 ?BIOSHD   equ 0 ;1=rely on 0040:0075 to contain # of HDs
@@ -29,15 +29,7 @@ local sym
 sym	db string,0
     .code
 	exitm <offset sym>
-	endm
-
-@putchr macro char
-	ifnb <char>
-	 mov al,char
-	endif
-	push eax
-	call VioPutCharDir
-	endm
+endm
 
 ;--- structures
 
@@ -186,12 +178,11 @@ szAbout db 'IDECHECK 1.55 (C) 1995-2022 Japheth',lf
 	db "  /LF  - print LF after CR",lf
 	db "  /P:n - set base port of IDE-controller (PIO/DMA only, defaults 1F0/170)",lf
 	db "  /I:n - set irq-line of IDE-controller (PIO/DMA only, defaults 14/15)",lf
-	db "  /D:vvvvdddd - set PCI vendor/device of Busmaster IDE controller to search for",lf
 	db "  ESC will stop HD checking",lf
 	db lf
 	db "IDECHECK should be run in true DOS for reliable results.",lf
 	db "Additionally, no disk-cache programs should be loaded.",lf
-	db 0
+nulls db 0
 
 regtxt1 db '   Sector',lf
 		db '---------',lf
@@ -217,23 +208,26 @@ drvtab label DRVPARM
 s2p1	DRVPARM <170h, 0h, 15>
 s2p2	DRVPARM <170h,10h, 15>
 
-;--- values for flags variable
+;--- values for bFlags variable
 
 FL_REP		equ 01h	;/REP set
 FL_CHS		equ 02h	;/CHS set - use CHS mode
 FL_RES		equ 04h	;/RES set - reboot after program termination
-FL_DMA		equ 08h	;/DMA set
-FL_I13		equ 10h	;/I13 set
-FL_PIO		equ 20h	;/PIO set
-FL_UDMASET	equ 40h	;UDMA mode has been modified (temporarily)
+FL_UDMASET	equ 08h	;/U:x set - UDMA mode has been modified (temporarily)
+
+;--- values for bMode variable
+FM_I13		equ 0
+FM_PIO		equ 1
+FM_DMA		equ 2
 
 	.DATA
 
-flags	dd FL_I13	;disk access method + flags
-flatsel dd 0		;flat DATA selector
+flatsel dd 0		; flat DATA selector
 
-bDrive	db -1		;drive number parameter 0,1,2,...
-drvmask db 0		;PIO/DMA: 0 for master, 10h for slave
+bDrive	db -1		; drive number parameter 0,1,2,...
+drvmask db 0		; PIO/DMA: 0 for master, 10h for slave
+bMode	db FM_I13	; disk access method
+bFlags	db 0		; flags
 
 stacyl	dw 0000h	;for CHS
 stahead db 00		;for CHS
@@ -257,7 +251,6 @@ wPrimary  dw 1F0h
 wSecondary dw 170h
 dwIDEport dd -1		;IDE port
 dwDMAPort dd -1
-dwVendor  dd -1		;vendor/device ID for IDE busmaster controller
 if ?NTSUPP
 hVDD	dd -1
 dwBopSel dd 0
@@ -441,8 +434,6 @@ getoption proc near
 
 	cmp ax,":b"
 	jz o_b
-	cmp ax,":d"
-	jz o_d
 	cmp ax,":i"
 	jz o_i
 	cmp ax,":l"
@@ -459,7 +450,7 @@ getoption_er:
 	stc
 	ret
 o_chs:
-	or byte ptr flags,FL_CHS
+	or bFlags, FL_CHS
 	ret
 o_ign:
 	or byte ptr fCont,1
@@ -480,22 +471,19 @@ o_nos:
 	mov fNoScan,1
 	ret
 o_dma:
-	and byte ptr [flags],not (FL_I13 or FL_PIO or FL_DMA)
-	or byte ptr [flags],FL_DMA
+	mov [bMode], FM_DMA
 	ret
 o_i13:
-	and byte ptr [flags],not (FL_I13 or FL_PIO or FL_DMA)
-	or byte ptr [flags],FL_I13
+	mov [bMode], FM_I13
 	ret
 o_pio:
-	and byte ptr [flags],not (FL_I13 or FL_PIO or FL_DMA)
-	or byte ptr [flags],FL_PIO
+	mov [bMode], FM_PIO
 	ret
 o_rep:
-	or byte ptr [flags],FL_REP
+	or [bFlags], FL_REP
 	ret
 o_res:
-	or byte ptr [flags],FL_RES
+	or [bFlags], FL_RES
 	ret
 o_b:						;/B:xx option
 	inc ebx
@@ -505,14 +493,6 @@ o_b:						;/B:xx option
 	and eax,eax
 	jz getoption_er
 	mov [cursec],eax
-	ret
-o_d:						;/D:xx option
-	inc ebx
-	inc ebx
-	invoke _gethex, ebx
-	jc getoption_er
-	mov [dwVendor],eax
-	clc
 	ret
 o_i:						;/I:xx option
 	inc ebx
@@ -645,8 +625,8 @@ done:
 	jz getpar_er
 	mov eax,[numsec]
 	mov ecx,256
-	test [flags],FL_PIO	;for PIO, 256 sectors are allowed
-	jnz @F
+	cmp [bMode],FM_PIO	;for PIO, 256 sectors are allowed
+	jz @F
 	mov ecx,128			;for DMA and I13, 128 is max
 @@:
 	cmp eax,ecx
@@ -728,7 +708,7 @@ waitready endp
 waitdata proc near
 
 	mov ecx,200000h
-	test byte ptr [fUseIRQ],1
+	test [fUseIRQ], 1
 	jnz waitdata_1
 @@:
 	in al,dx
@@ -761,7 +741,7 @@ waitdata endp
 
 waitseek proc near
 	mov ecx,100000h
-	test byte ptr [fUseIRQ],1
+	test [fUseIRQ], 1
 	jnz waitdata_1
 @@:
 	in al,dx
@@ -778,7 +758,7 @@ waitseek_er:
 waitseek endp
 
 waitcmd proc near
-	test byte ptr [fUseIRQ],1
+	test [fUseIRQ], 1
 	jnz waitdata
 	mov ecx,10000h
 @@:
@@ -1076,9 +1056,9 @@ if ?SETINT09
 	mov ax, 205h
 	int 31h
 endif
-	test flags,FL_I13	;hook into in int 13h when reading DMA/PIO
-	jnz done
-if ?SETINT13
+	cmp bMode, FM_I13
+	jz done
+if ?SETINT13	; hook int 13h when reading DMA/PIO?
 	mov bl, 13h
 	mov ax, 204h
 	int 31h
@@ -1089,19 +1069,18 @@ if ?SETINT13
 	mov ax, 205h
 	int 31h
 endif
-	test [flags], FL_I13
-	jnz @F
+
 	in al, 021h
 	mov [irqm1], al
 	in al, 0A1h
 	mov [irqm2], al
-	or byte ptr [fMSaved], 1
+	mov [fMSaved], 1
 	mov al, 0FFh
 	out 0A1h,al
 	mov al, 0FCh
 	out 021h, al
-@@:
-	test byte ptr [fUseIRQ],1
+
+	test [fUseIRQ], 1
 	jz done
 if ?SETHDIRQ
 	call getirq
@@ -1152,47 +1131,59 @@ int1A endp
 ;--- bit 4-6: reserved
 ;--- bit 0-1: primary IDE
 ;--- bit 2-3: secondary IDE
+;--- in: dwIDEport 
+;--- out: [dwPath]=bus/dev/fn
 
-FindPath proc
-	cmp [dwVendor],-1
-	jz @F
-	mov edx,[dwVendor]
-	mov ecx,edx
-	shr edx,16
-	xor esi,esi
-	mov ax,0B102h	;find device DX/CX
-	call int1A
-	jnc found2
+FindPath proc uses esi
+	cmp dwIDEport, -1
+	jnz @F
+	invoke printf, CStr("No IDE port to find device path",lf)
+	stc
 	ret
 @@:
-	mov al,08Ah		;legacy, BM (bit 7)
-	call getclass
-	jnc found
-	mov al,080h		;legacy, BM
-	call getclass
-	jnc found
-	mov al,0FAh
-	call getclass
-	jnc found
-	mov al,0F0h
-	call getclass
-	jnc found
+	mov esi, 80000008h
+nextdev:
+	mov dx, 0cf8h
+	mov eax, esi
+	out dx, eax
+	add dl, 4
+	in eax, dx
+	shr eax, 8
+	and al, 80h
+	cmp eax, 10180h
+	jz devfound
+skipdev:
+	add esi, 100h
+	cmp esi, 81000008h
+	jb nextdev
+	stc
 	ret
-found:
-;	invoke printf, CStr("PCI B103, ECX=%X : EBX=%X",lf), ecx, ebx
+devfound:
+	mov eax, esi
+	mov al, 4*4
+	mov dx, 0cf8h
+	out dx, eax
+	add dl, 4
+	in eax, dx
+	and al, 0feh
+	cmp eax, [dwIDEport]
+	jz found2
+	mov eax, esi
+	mov al, 6*4
+	mov dx, 0cf8h
+	out dx, eax
+	add dl, 4
+	in eax, dx
+	and al, 0feh
+	cmp eax, [dwIDEport]
+	jnz skipdev
 found2:
-	movzx ebx,bx
-	mov [dwPath],ebx
+	mov eax, esi
+	shr eax, 8
+	movzx eax, ax
+	mov [dwPath],eax
+	clc
 	ret
-getclass:
-	xor esi, esi	;device index in SI (0-n)
-	mov ecx, 10100h	;class 01 (mass storage), subclass 01 (IDE)
-	mov cl,al
-	mov ax,0B103h	;find PCI class code
-	push ecx
-	call int1A
-	pop ecx
-	retn
 	align 4
 FindPath endp
 
@@ -1268,11 +1259,16 @@ GetPCIInfo proc
 	jc error
 	movzx eax,cx
 	shr ecx,16
-	invoke printf, CStr("PCI %04X (%2u): command register=%X, status register=%X",lf), dwPath, edi, eax, ecx
+	mov edx, offset nulls
 	test al,4
 	jnz @F
-	test [flags], FL_DMA
-	jz @F
+	mov edx, CStr("no ")
+@@:
+	invoke printf, CStr("PCI %04X (%2u): command register=%X[%sbusmaster], status register=%X",lf), dwPath, edi, eax, edx, ecx
+	test al,4
+	jnz @F
+	cmp [bMode], FM_DMA
+	jnz @F
 	invoke printf, CStr("Busmaster (bit 2) not enabled in command register! /DMA can't work",lf)
 	stc
 	ret
@@ -1439,7 +1435,7 @@ GetPCIInfo endp
 ;--- display CHS/LBA information from config sector
 ;--- ebx=config data
 
-DispCfgValues proc
+DisplayCfgValues proc
 	movzx eax,[ebx].IDENTIFY_DEVICE_DATA.NumCylinders
 	movzx ecx,[ebx].IDENTIFY_DEVICE_DATA.NumHeads
 	movzx edx,[ebx].IDENTIFY_DEVICE_DATA.NumSectorsPerTrack
@@ -1468,7 +1464,7 @@ DispCfgValues proc
 @@:
 	ret
 	align 4
-DispCfgValues endp
+DisplayCfgValues endp
 
 setmaxsecs proc
 	mov eax,[reqsecs]	;sectors set with /L:xxx ?
@@ -1550,7 +1546,7 @@ endif
 	test cl,1		;int 13h, ah=42h/43h available?
 	jnz int13ext
 @@:
-	or flags,FL_CHS
+	or bFlags, FL_CHS
 ;	test cl,4
 ;	jnz int1348ok
 noint1348:
@@ -1644,8 +1640,8 @@ nodpte:
 	mov dword ptr [configb+0],eax
 	mov dword ptr [configb+4],ecx
 	invoke printf, CStr("EDD30: interface type: %s",lf), addr configb
-	test [flags],FL_I13
-	jnz @F
+	cmp [bMode],FM_I13
+	jz @F
 	cmp eax," ATA"	;for /DMA and /PIO, interface MUST be "ATA"
 	jz @F
 	cmp eax,"ATA"
@@ -1692,8 +1688,8 @@ done:
 	mov [maxcyl],eax
 	mov [maxhead],ecx
 	mov [maxsec],edx
-	test [flags],FL_I13
-	jnz @F
+	cmp [bMode], FM_I13
+	jz @F
 	cmp [dwIDEport],-1
 	jnz @F
 	call sethdparms
@@ -1770,8 +1766,8 @@ parprot proc stdcall
 nopci2:
 	invoke printf, CStr("no PCI v2.0c BIOS found",lf)
 pcidone:
-	test flags, FL_DMA
-	jz @F
+	cmp bMode, FM_DMA
+	jnz @F
 	cmp [dwDMAPort],-1
 	jnz @F
 	invoke printf, CStr("no PCI Busmaster IDE controller found",lf)
@@ -1791,8 +1787,8 @@ pcidone:
 @@:
 	call SetIntVectors
 
-	test flags,FL_I13
-	jnz exit
+	cmp bMode, FM_I13
+	jz exit
 
 	call SaveDevStat
 
@@ -1826,17 +1822,19 @@ pcidone:
 	setnz [fDMA]
 	test ah,2
 	setnz [fLBA]
-	invoke DispCfgValues
+	invoke DisplayCfgValues
 	movzx edx, [ebx].IDENTIFY_DEVICE_DATA.Capabilities
 	movzx ecx, [fDMA]
 	movzx eax, [fLBA]
 	invoke printf, CStr("CFG  49=%4X: DMA=%u, LBA=%u",lf), edx, ecx, eax
 
-	test byte ptr [flags],FL_CHS
+	test [bFlags], FL_CHS
 	jz @F
-	mov byte ptr [fLBA],0
+	mov [fLBA], 0
 	invoke printf, CStr("CFG: LBA not used",lf)
 @@:
+
+;--- PIO values
 
 	mov ebx,offset configb
 	movzx edx,word ptr [ebx+51*2]
@@ -1849,6 +1847,14 @@ pcidone:
 	pushad
 	invoke printf, CStr("CFG  51=%4X: PIO mode 0-2 timing: %u",lf), edx, eax
 	popad
+
+;--- PIO 32-bio IO?
+
+parprot_4:
+	test byte ptr [f32],1
+	jnz @F
+	invoke printf, CStr("16-Bit IO (INSW) will be used",lf)
+@@:
 
 ;--- Advanced PIO modes
 
@@ -1873,6 +1879,40 @@ pcidone:
 	.endw
 	invoke printf, CStr(lf)
 noapio:
+
+;--- display (+set) multiple sector value
+
+	mov ebx,offset configb
+	movzx ecx, word ptr [ebx+2*47]
+	movzx eax, cl
+	invoke printf, CStr("CFG  47=%4X: max. multiple sector value: %u",lf), ecx, eax
+	test byte ptr [fMult],1
+	jz nomultiple
+	mov ebx,offset configb
+	movzx ecx, word ptr [ebx+2*59]
+	push ecx
+	movzx eax, cl
+	invoke printf, CStr("CFG  59=%4X: current multiple sector value: %u"), ecx, eax
+	pop eax
+	test ah,1
+	jz parprot_3
+	and al,al
+	jz parprot_3
+	mov multsec,al
+	invoke printf, CStr(" (valid setting)",lf)
+	jmp parprot_2
+parprot_3:
+	invoke printf, CStr(" (invalid setting)",lf)
+	mov byte ptr fMult,0
+	cmp byte ptr [reqmult],0
+	jnz parprot_2
+	invoke printf, CStr("won't use multiple sector read (try /M switch)",lf)
+parprot_2:
+	cmp byte ptr [reqmult],0
+	jz nomultiple
+	call setmult
+	jc parprot_ex
+nomultiple:
 
 ;--- multiword DMA modes
 
@@ -1912,8 +1952,8 @@ noapio:
 	and ecx,ecx
 	jz noudma
 
-	test flags, FL_DMA
-	jz noudmaset
+	cmp bMode, FM_DMA
+	jnz noudmaset
 	cmp udmamode, -1
 	jz noudmaset
 	invoke printf, CStr("setting UDMA mode ... ")
@@ -1950,6 +1990,8 @@ noudmaset:
 	popad
 noudma:
 
+;--- Write cache
+
 	mov ebx,offset configb
 	mov ax,[ebx+2*87]
 	and ah,0C0h
@@ -1964,43 +2006,6 @@ noudma:
 	invoke printf, CStr("CFG  85=%4X: Write cache: %s",lf), eax, ecx
 nosupp: 
 
-	mov ebx,offset configb
-	mov ax,[ebx+2*47]
-	movzx eax,al
-	invoke printf, CStr("CFG  47=%4X: max. multiple sector value is %u",lf), eax, eax
-
-	test byte ptr [fMult],1
-	jz parprot_4
-
-	mov ebx,offset configb
-	mov ax,[ebx+2*59]
-	push eax
-	movzx eax,al
-	invoke printf, CStr("CFG  59=%4X: current multiple sector value: %u"), eax, eax
-	pop eax
-	test ah,1
-	jz parprot_3
-	and al,al
-	jz parprot_3
-	mov multsec,al
-	invoke printf, CStr(" (valid setting)",lf)
-	jmp parprot_2
-parprot_3:
-	invoke printf, CStr(" (invalid setting)",lf)
-	mov byte ptr fMult,0
-	cmp byte ptr [reqmult],0
-	jnz parprot_2
-	invoke printf, CStr("will not use multiple sector read (try /M switch)",lf)
-parprot_2:
-	cmp byte ptr [reqmult],0
-	jz parprot_4
-	call setmult
-	jc parprot_ex
-parprot_4:
-	test byte ptr [f32],1
-	jnz @F
-	invoke printf, CStr("16-Bit IO (INSW) will be used",lf)
-@@:
 	call setmaxsecs
 	clc
 	jmp parprot_ex
@@ -2038,7 +2043,7 @@ setudmamode proc stdcall
 	out dx,al
 	call waitready
 	jc error
-	or [flags],FL_UDMASET
+	or [bFlags], FL_UDMASET
 	clc
 	ret
 error:
@@ -2160,9 +2165,9 @@ setALreg endp
 
 prepregs proc c
 
-	test byte ptr fLBA,1
+	test fLBA, 1
 	jnz prepregs_1
-	test byte ptr [flags],FL_REP
+	test [bFlags], FL_REP
 	jnz prepregs_1
 	movzx eax,dl
 	add eax,[numsec]
@@ -2255,8 +2260,8 @@ checktime endp
 
 checkhd proc near
 
-	test flags,FL_I13
-	jnz @F
+	cmp bMode, FM_I13
+	jz @F
 if ?SETINDOS
 	push es
 	les ebx,[InDOS]
@@ -2291,8 +2296,8 @@ check_1:
 	call prepregs
 	jnc check_0
 done:
-	test flags,FL_I13
-	jnz exit
+	cmp bMode, FM_I13
+	jz exit
 	call resetmultsec		;multiple sector reset
 	cli
 	call RestoreDevStat
@@ -2428,8 +2433,8 @@ readcore proc near
 
 	push ebp
 	mov ebp,esp
-	test flags, FL_I13
-	jz noint13
+	cmp bMode, FM_I13
+	jnz noint13
 	mov bh,al
 	call readi13
 	mov bl,0
@@ -2439,8 +2444,8 @@ noint13:
 	sub esp,4
 	mov bh,dh
 	dec al
-	test flags, FL_DMA
-	jz @F
+	cmp bMode, FM_DMA
+	jnz @F
 	cmp al,80h
 	jc @F
 	mov al,7Fh			;max 127
@@ -2450,7 +2455,7 @@ noint13:
 
 	mov [esp+0],al		;1x2 (sectors to read)
 
-	test byte ptr fLBA,1	;use LBA address?
+	test fLBA, 1		;use LBA access?
 	jz readcore_1
 	mov eax,[cursec]
 	mov [esp+1],ax
@@ -2488,15 +2493,15 @@ readcore_2:
 
 	mov bh,0		   ;sector count
 	inc edx 		   ;1x7
-	test flags, FL_DMA
-	jnz @F
+	cmp bMode, FM_DMA
+	jz @F
 	call waitready
 	jc readcore_er3
 @@:
 	mov edi,[bufadr]   ;the buffer is zero-based flat!
 
-	test byte ptr flags,FL_DMA
-	jz @F
+	cmp bMode, FM_DMA
+	jnz @F
 	push edx
 	mov edx,[dwDMAPort]
 	in al,dx
@@ -2532,8 +2537,8 @@ readcore_0: 			   ;<----
 	jb @F
 	mov cl,bl
 @@:
-	test byte ptr flags,FL_DMA
-	jz polldata
+	cmp bMode, FM_DMA
+	jnz polldata
 
 	mov eax, [dwDMAList]
 	mov edi,[bufadr2]
@@ -2579,8 +2584,8 @@ polldata:
 	movzx ecx,cl
 	add bh,cl
 
-	test byte ptr flags,FL_DMA
-	jz nodma
+	cmp bMode, FM_DMA
+	jnz nodma
 
 	mov edx,[dwDMAPort]
 	in al,dx
@@ -2613,7 +2618,7 @@ readcore_3:
 	mov ah,01
 @@:
 	add [sectors],eax
-	test byte ptr flags,FL_REP
+	test bFlags, FL_REP
 	jnz readcore_4
 	add [cursec],eax
 	jmp readcore_4
@@ -2649,6 +2654,9 @@ readcore endp
 
 ;*** display protocol
 ;--- all registers + flags preserved!
+;--- called by checkhd()
+;--- note that inDOS flag is set if PIO/DMA
+;--- and printf() is using DOS - to be fixed.
 
 protocol proc c
 
@@ -2656,9 +2664,10 @@ protocol proc c
 	pushfd
 
 	lahf
-	test byte ptr [flags],FL_REP
+
+	test [bFlags], FL_REP
 	jnz protok_0
-	test byte ptr [fLBA],1
+	test [fLBA], 1
 	jnz protok_1
 	call protoCHS
 	jmp protok_2
@@ -2684,6 +2693,7 @@ protok_er:
 protok_3:
 	invoke printf, CStr(lf)
 protok_4:
+
 	popfd
 	popad
 	ret
@@ -2884,7 +2894,7 @@ if ?SETHDIRQ
 	int 31h
 @@:
 endif
-	test byte ptr [fMSaved],1
+	cmp [fMSaved], 0
 	jz @F
 	mov al,[irqm2]
 	out 0A1h,al
@@ -3053,8 +3063,8 @@ main proc c
 			mov bOS, OS_OS2
 		.endif
 	.endif
-	test [flags],FL_I13	;allow Int 13h access
-	jnz @F
+	cmp [bMode], FM_I13	;allow Int 13h access
+	jz @F
 	.if bOS != OS_DOS
 		invoke printf, CStr(lf,"direct disk access not allowed with this OS - aborted.",lf)
 		jmp main_ex
@@ -3115,8 +3125,8 @@ endif
 
 	mov edi, [bufadr]
 	mov ecx, 20000h/4
-	test [flags], FL_PIO
-	jnz @F
+	cmp [bMode], FM_PIO
+	jz @F
 	mov ecx, 10000h/4
 	mov edi, [bufadr2]
 @@:
@@ -3204,7 +3214,7 @@ endif
 
 	invoke printf, CStr("%u kB/sec",lf), eax
 
-	test byte ptr [flags],FL_RES
+	test [bFlags], FL_RES
 	jz @F
 	invoke printf, CStr(lf,"press Ctrl-Alt-Del to reboot!")
 if ?SETINT09
@@ -3215,7 +3225,7 @@ endif
 @@:
 main_ex1:
 main_ex:
-	test [flags],FL_UDMASET
+	test [bFlags], FL_UDMASET
 	jz @F
 	mov cl,[configb+88*2+1]
 	movzx ecx,cl
