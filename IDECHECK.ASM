@@ -29,7 +29,15 @@ local sym
 sym	db string,0
     .code
 	exitm <offset sym>
-endm
+	endm
+
+@putchr macro char
+	ifnb <char>
+	 mov al,char
+	endif
+	push eax
+	call VioPutCharDir
+	endm
 
 ;--- structures
 
@@ -246,7 +254,7 @@ reqsecs dd 0		;/L:xxx value
 bufadr	dd 0		;DOS memory buffer (128 kB)
 bufadr2	dd 0		;64 kB buffer, aligned at 64 kB boundary
 dwPath	  dd -1
-dwClass   dd -1
+dwClass   dd -1		;PCI class/subclass/PI
 wPrimary  dw 1F0h
 wSecondary dw 170h
 dwIDEport dd -1		;IDE port
@@ -1149,16 +1157,20 @@ nextdev:
 	add dl, 4
 	in eax, dx
 	shr eax, 8
+	mov bl, al
 	and al, 80h
 	cmp eax, 10180h
 	jz devfound
 skipdev:
-	add esi, 100h
+	add esi, 80h
 	cmp esi, 81000008h
 	jb nextdev
 	stc
 	ret
 devfound:
+	mov eax, 1F0h
+	test bl, 1
+	jz @F
 	mov eax, esi
 	mov al, 4*4
 	mov dx, 0cf8h
@@ -1166,8 +1178,12 @@ devfound:
 	add dl, 4
 	in eax, dx
 	and al, 0feh
+@@:
 	cmp eax, [dwIDEport]
 	jz found2
+	mov eax, 170h
+	test bl, 4
+	jz @F
 	mov eax, esi
 	mov al, 6*4
 	mov dx, 0cf8h
@@ -1175,6 +1191,7 @@ devfound:
 	add dl, 4
 	in eax, dx
 	and al, 0feh
+@@:
 	cmp eax, [dwIDEport]
 	jnz skipdev
 found2:
@@ -1187,14 +1204,17 @@ found2:
 	align 4
 FindPath endp
 
-if 0
-displayahci proc uses ebx esi edi
+if 1
+
+;--- check if AHCI mode is enabled in SATA controller
+
+checksata proc uses ebx esi edi
 
 	push 9
-	call getpcireg ;get PCI 24 - AHCI Base Address
+	call getpcireg ;get PCI 24 - HBA
 	jc exit
 	mov esi, ecx
-	invoke printf, CStr("AHCI Base Address=%X",lf), ecx
+	invoke printf, CStr("SATA HBA=%X",lf), ecx
 	push esi
 	pop cx
 	pop bx
@@ -1206,22 +1226,26 @@ displayahci proc uses ebx esi edi
 	push bx
 	push cx
 	pop esi
-	mov ebx,[esi+0]
-	invoke printf, CStr("HBA Caps (CAP): %X",lf), ebx
-	xor eax,eax
-	bt ebx,18
-	setc al
-	invoke printf, CStr("CAP bit 18[SAM]=%u (1=supports AHCI mode only)",lf), eax
-	mov ebx,[esi+4]
-	invoke printf, CStr("Global HBA Control (GHC): %X",lf), ebx
-	xor eax,eax
-	bt ebx,31
-	setc al
-	invoke printf, CStr("GHC bit 31[AE]=%u (1=AHCI Enable)",lf), eax
 
-	invoke printf, CStr("Interrupt Status Register (IS): %X",lf), dword ptr [esi+8]
-	invoke printf, CStr("Ports Implemented (PI): %X",lf), dword ptr [esi+12]
+	mov ebx, [esi+4]
+	mov ecx, CStr("dis")
+	bt ebx, 31
+	jz @F
+	mov ecx, CStr("en")
+@@:
+	invoke printf, CStr("Global HBA Control (GHC): %X [AHCI mode %sabled]",lf), ebx, ecx
+	bt ebx, 31
+	jnc exit
+	mov ebx, [esi+0]
+	invoke printf, CStr("HBA Caps (CAP): %X",lf), ebx
+;	xor eax, eax
+;	bt ebx, 18
+;	setc al
+;	invoke printf, CStr("CAP bit 18[SAM]=%u (1=supports AHCI mode only)",lf), eax
+;	invoke printf, CStr("Interrupt Status Register (IS): %X",lf), dword ptr [esi+8]
+;	invoke printf, CStr("Ports Implemented (PI): %X",lf), dword ptr [esi+12]
 	invoke printf, CStr("AHCI Version (VS): %X",lf), dword ptr [esi+16]
+	stc
 exit:
 	ret
 getpcireg:
@@ -1233,7 +1257,7 @@ getpcireg:
 	mov ebx,[dwPath]
 	call int1A
 	retn
-displayahci endp
+checksata endp
 endif
 
 ;--- get and display PCI infos
@@ -1295,6 +1319,9 @@ GetPCIInfo proc
 				mov ecx,CStr("ATA")
 			.elseif ( al == 6)
 				.if dl == 1
+					mov byte ptr [dwClass], 8Fh
+					call checksata
+					jnc ahci_disabled
 					mov ecx,CStr("SATA (AHCI)")
 				.else
 					mov ecx,CStr("SATA")
@@ -1311,14 +1338,10 @@ GetPCIInfo proc
 		.else
 			invoke printf, CStr("PCI device's BCC (=Base Class Code) != 01 (mass storage device)",lf)
 		.endif
-if 0
-		mov eax,dwClass
-		.if eax == 010601h ;SATA AHCI
-			call displayahci
-		.endif
-endif
+
 		jmp exit
 	.endif
+ahci_disabled:
 if 0
 	push 3
 	call getpcireg ;get PCI 0C-0F
@@ -1642,9 +1665,11 @@ nodpte:
 	invoke printf, CStr("EDD30: interface type: %s",lf), addr configb
 	cmp [bMode],FM_I13
 	jz @F
-	cmp eax," ATA"	;for /DMA and /PIO, interface MUST be "ATA"
+	cmp eax," ATA"	;for /DMA and /PIO, interface MUST be "ATA" or "SATA"
 	jz @F
 	cmp eax,"ATA"
+	jz @F
+	cmp eax,"ATAS"
 	jnz error2
 @@:
 	mov ax,word ptr @flat:[ebx].EDD30.qwIFPath
@@ -1705,7 +1730,7 @@ error:
 	ret
 error2:
 	movzx eax,[bDrive]
-	invoke printf, CStr("drive %u isn't ATA",lf), eax
+	invoke printf, CStr("drive %u isn't (S)ATA",lf), eax
 	stc
 	ret
 	align 4
@@ -2041,8 +2066,10 @@ setudmamode proc stdcall
 	add edx, 7
 	mov al,0EFh		;set features
 	out dx,al
-	call waitready
+	call waitcmd
 	jc error
+	test al,1
+	jnz error
 	or [bFlags], FL_UDMASET
 	clc
 	ret

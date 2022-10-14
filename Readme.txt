@@ -50,9 +50,6 @@
   /LF  - print LF after CR
   /P:n - set base port of IDE-controller (PIO/DMA only, defaults 1F0/170)
   /I:n - set irq-line of IDE-controller (PIO/DMA only, defaults 14/15)
-  /D:vvvvdddd - set PCI vendor/device of Busmaster IDE controller to
-         search for (DMA only). Usually not needed on modern systems, since
-         this information is returned by the Int 13h EDD BIOS.
  
  If options /PIO or /DMA are used, IDECHECK should not be run on a system
  with a disk-cache installed, because the cache program might get confused. 
@@ -71,6 +68,7 @@
        check for busmaster enabled in PCI command register for /DMA.
        fixed: IDE controller find procedure didn't find all controllers.
        obsolete option /D removed.
+       accept SATA controllers in non-AHCI mode.
  06/2022, 1.54: progress display reduced to a 3-4 times per second;
        drive valid check relies on int 13h, ah=41h/48h/08h only.
  01/2021, 1.53: default no of sectors to read changed to 127.
