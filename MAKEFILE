@@ -24,7 +24,7 @@ DEBUG=0
 
 !if $(DEBUG)
 OUTDIR=DEBUG
-AOPTD=-Zi
+AOPTD=-Zi -D_DEBUG
 LOPTD=debug c op cvp
 !else
 OUTDIR=RELEASE

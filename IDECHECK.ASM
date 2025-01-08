@@ -29,15 +29,21 @@ local sym
 sym	db string,0
     .code
 	exitm <offset sym>
-	endm
+endm
 
-@putchr macro char
-	ifnb <char>
-	 mov al,char
-	endif
-	push eax
-	call VioPutCharDir
-	endm
+@dbgprintf macro fmt,args:vararg
+ifdef _DEBUG
+	.const
+dbgfmtstr = $
+	db fmt,0
+	.code
+ ifnb <args>
+	invoke printf,dbgfmtstr,args
+ else
+	invoke printf,dbgfmtstr
+ endif
+endif
+endm
 
 ;--- structures
 
@@ -162,7 +168,7 @@ DRVPARM ends
 
 ;*** constants
 
-szAbout db 'IDECHECK 1.55 (C) 1995-2022 Japheth',lf
+szAbout db 'IDECHECK 1.56 (C) 1995-2025 Japheth',lf
 	db 'usage: IDECHECK drive [ options ]',lf
 	db lf
 	db ' drive: HD number, starts with 0',lf
@@ -181,11 +187,11 @@ szAbout db 'IDECHECK 1.55 (C) 1995-2022 Japheth',lf
 	db "  /NOI - use polling, not IRQ (PIO/DMA only, /I:n ignored)",lf
 	db "  /NOS - don't scan drive, just display info",lf
 	db "  /SGL - do not use multiple read (PIO only, /M:n ignored)",lf
-	db "  /REP - always read the same block (stop with ESC)",lf
+	db "  /REP - always read the same block (stop with ESC, /L:n ignored)",lf
 	db "  /RES - reboots machine after program termination",lf
 	db "  /LF  - print LF after CR",lf
-	db "  /P:n - set base port of IDE-controller (PIO/DMA only, defaults 1F0/170)",lf
-	db "  /I:n - set irq-line of IDE-controller (PIO/DMA only, defaults 14/15)",lf
+	db "  /P:n - set base port of ISA IDE-controller (PIO/DMA only, defaults 1F0/170)",lf
+	db "  /I:n - set irq-line of ISA IDE-controller (PIO/DMA only, defaults 14/15)",lf
 	db "  ESC will stop HD checking",lf
 	db lf
 	db "IDECHECK should be run in true DOS for reliable results.",lf
@@ -250,7 +256,6 @@ maxsec	dd -1		;max value for S in C/H/S
 
 dwDMAList dd 0		;linear address DMA list (must be in DOS mem)
 
-reqsecs dd 0		;/L:xxx value
 bufadr	dd 0		;DOS memory buffer (128 kB)
 bufadr2	dd 0		;64 kB buffer, aligned at 64 kB boundary
 dwPath	  dd -1
@@ -268,9 +273,13 @@ lasttick dd 0
 numsec	dd 127	;numbers of sectors to read in one call
 chssecs dq 0	;number of sectors in CHS mode
 lbasecs dq 0	;number of sectors in LBA mode
-cursec	dd 0	;current sector number
-maxsecs dd 0	;# of sectors ( either CHS or LBA )
+cursec	dd 0	;current sector number to read (also set by /B:)
+maxsecs dd 0	;max # of sectors ( either CHS or LBA )
 sectors dd 0	;sectors read so far
+reqsecs dd 0	;/L:xxx value
+startsec dd 0	;/B:xxx value
+numerr  dd 0
+numrest dd 0
 rmStack dd 0	;real mode stack SSSS:0000 address
 
 if ?SETINDOS
@@ -501,6 +510,7 @@ o_b:						;/B:xx option
 	and eax,eax
 	jz getoption_er
 	mov [cursec],eax
+	mov [startsec],eax
 	ret
 o_i:						;/I:xx option
 	inc ebx
@@ -990,7 +1000,7 @@ readpartition proc near
 	mov cx,1
 	mov dh,0
 	mov ax,0201h
-	call int13	;will be read into 128k buffer
+	call int13acc	;will be read into 128k buffer
 	pop ecx
 	pop edx
 	inc dl
@@ -1261,6 +1271,8 @@ checksata endp
 endif
 
 ;--- get and display PCI infos
+;--- out: NC=ok
+;---      C=no PCI IDE controller
 
 GetPCIInfo proc
 
@@ -1338,7 +1350,9 @@ GetPCIInfo proc
 		.else
 			invoke printf, CStr("PCI device's BCC (=Base Class Code) != 01 (mass storage device)",lf)
 		.endif
-
+		cmp [bMode], FM_I13
+		jz exit
+		stc
 		jmp exit
 	.endif
 ahci_disabled:
@@ -1489,10 +1503,10 @@ DisplayCfgValues proc
 	align 4
 DisplayCfgValues endp
 
+;--- set [maxsecs] variable
+;--- called by getint13parms & parprot
+
 setmaxsecs proc
-	mov eax,[reqsecs]	;sectors set with /L:xxx ?
-	and eax,eax
-	jnz done
 	mov eax,dword ptr [lbasecs]
 	cmp dword ptr lbasecs+4,0
 	jz @F
@@ -1502,11 +1516,19 @@ setmaxsecs proc
 	jnz @F
 	mov eax,dword ptr [chssecs]
 @@:
-	sub eax,[cursec]	;do we start at sector 0 or is /B:xxx set?
-	jnc done
-	xor eax, eax
+;	sub eax,[cursec]	;do we start at sector 0 or is /B:xxx set?
+;	jnc done
+;	xor eax, eax
 done:
 	mov [maxsecs],eax
+	cmp [reqsecs],0
+	jz @F
+	mov ecx,[cursec]
+	add ecx,[reqsecs]
+	cmp eax, ecx
+	jb @F
+	mov [maxsecs],ecx
+@@:
 	ret
 	align 4
 setmaxsecs endp
@@ -1574,7 +1596,7 @@ endif
 ;	jnz int1348ok
 noint1348:
 	mov ah,08h
-	call int13
+	call int13acc
 	jc error
 	movzx edx,dh		;max head number
 	mov ax,cx
@@ -1613,7 +1635,7 @@ int1348ok:
 	mov ebx, [bufadr]
 	mov dword ptr @flat:[ebx].EDD.wSize,ecx
 	mov ah,48h
-	call int13
+	call int13acc
 	jc error
 	mov ebx, [bufadr]
 	mov eax, dword ptr @flat:[ebx].EDD.qwNumSecs+0
@@ -1769,6 +1791,7 @@ readid_er2:
 readid endp
 
 ;*** display parameters, prepare 
+;--- called by main
 
 parprot proc stdcall
 
@@ -1787,7 +1810,7 @@ parprot proc stdcall
 	call GetPCIInfo
 	jnc pcidone
 	invoke printf, CStr("no PCI IDE controller found",lf)
-	jmp pcidone
+	jmp pcidone ; continue (/DMA will fail below, but PIO might be tried with port 1F0h/170h)
 nopci2:
 	invoke printf, CStr("no PCI v2.0c BIOS found",lf)
 pcidone:
@@ -2177,7 +2200,7 @@ endif
 
 setALreg proc near
 	mov ebx,[maxsecs]
-	sub ebx,[sectors]
+	sub ebx,[cursec]
 	mov eax,[numsec]	;sectors to read in one call
 	cmp ebx,eax
 	jae @F
@@ -2189,6 +2212,7 @@ setALreg endp
 
 ;--- CHS: set ecx, edx registers for next call of readcore
 ;--- LBA: set ebx
+;--- out: C=done, NC=continue
 
 prepregs proc c
 
@@ -2214,7 +2238,7 @@ prepregs_01:
 	mov dl,al
 prepregs_1:
 	mov ebx,[maxsecs]
-	sub ebx,[sectors]
+	sub ebx,[cursec]
 	jbe prepregs_2
 prepregs_ex:
 	clc
@@ -2282,7 +2306,6 @@ checktime proc
     ret
 checktime endp
 
-
 ;*** read a hd until ESC is pressed or the end is reached
 
 checkhd proc near
@@ -2303,25 +2326,45 @@ endif
 check_0:
 	push ecx
 	push edx
-	call setALreg		;set number of sectors in AL
+	call setALreg		;set number of sectors to read in AL
 	call readcore
 	pop edx
 	pop ecx
-	jc check_1
+	jc check_1			;C if end has been reached
 	call checktime
-	jc @F
+	jc nextblock
 	call checkifescpressed
 	jnz done
 	call protocol
-	jmp @F
+	jmp check_0a
 check_1:
-	test byte ptr fCont,1
-	jz done
+	mov eax, [numsec]
+	cmp eax, 1
+	jz @F
+	@dbgprintf <10,"enter error mode (reading 1 sector/call",10>
+	mov [numerr], eax
+	mov [numrest], eax
 	mov [numsec],1
-	inc [cursec]
+	invoke printf, CStr(10)
+    jmp check_0a
 @@:
+;	@dbgprintf <10,"error reading cursec=%u",10>, cursec
+	invoke printf, CStr("error reading sector %u",10), cursec
+	test byte ptr fCont,1   ;option /IGN set? (continue on errors)
+	jnz done
+	inc [cursec]
+check_0a:
+	cmp numerr,0
+	jz nextblock
+	dec numerr
+	jnz nextblock
+	mov eax,[numrest]
+	mov [numsec],eax
+	@dbgprintf <10,"exit error mode (reading %u sectors/call",10>,eax
+nextblock:
 	call prepregs
 	jnc check_0
+	@dbgprintf <"prepregs returned with C, [cursec]=%u [maxsecs]=%u",10>, cursec, maxsecs
 done:
 	cmp bMode, FM_I13
 	jz exit
@@ -2340,11 +2383,13 @@ exit:
 	align 4
 checkhd endp
 
-;--- call int 13h, AH=02, 42, 48 
-;--- inp: EAX, ECX, EDX
-;--- for read/writes, the DOS 128 kB buffer will be used
+;--- call int 13h, AH=02/08/42/48 
+;--- in: AX, CX (if AH=2), DX, [cursec]
+;--- out: NC=ok, C=error
+;--- for read/writes, the DOS 128 kB buffer will be used.
+;--- currently limited to 2 TB access (32-bit sector count)
 
-int13 proc
+int13acc proc
 	push edi
 	push ebx
 	push ebp
@@ -2427,10 +2472,11 @@ handleNT:
 	jmp doneNT
 	align 4
 endif
-int13 endp
+int13acc endp
 
 ;--- read drive using int 13h
 ;--- CHS: AL=num sectors, DH=head, DL=start sector, CX=cylinder 
+;--- LBA: al=num sectors
 
 readi13 proc
 	mov ah,dl
@@ -2442,18 +2488,20 @@ readi13 proc
 	shl cl,6		;cyl 8-9 -> CL[6-7]
 	or cl,ah		;sector ->	CL[0-5]
 	mov ah,02h
-	jmp int13
+	jmp int13acc
 use42:
 	mov ah,42h
-	jmp int13
+	jmp int13acc
 	align 4
 readi13 endp
 
 ;*** readcore ***
-;***
+;*** in:
 ;*** for CHS: CX=cylinder, DH=Head, DL=Sector
 ;*** CHS + LBA: AL=secs
+;--- cursec: current sector to start read
 ;*** out: NC -> EAX=sectors read
+;---      var cursec updated
 ;***       C -> error
 
 readcore proc near
@@ -2466,6 +2514,7 @@ readcore proc near
 	call readi13
 	mov bl,0
 	jnc readcore_3
+	stc
 	jmp readcore_ex
 noint13:
 	sub esp,4
@@ -2700,14 +2749,28 @@ protocol proc c
 	jmp protok_2
 protok_0:
 	push eax
-	mov eax,[sectors]
-	invoke printf, CStr(13,"Sectors: %u"), eax
+	invoke printf, CStr(13,"Sectors: %u"), [sectors]
 	pop eax
 	jmp protok_2
 protok_1:
 	push eax
 	mov eax,[cursec]
-	invoke printf, CStr(13,"Sector: %u"), eax
+    sub eax,[startsec]
+	mov ecx, 100
+	mul ecx
+	mov ecx,[maxsecs]
+    sub ecx,[startsec]
+	div ecx
+    push eax
+    mov eax, edx   ;remainder
+    mov ecx, 10
+    mul ecx
+    mov ecx,[maxsecs]
+    sub ecx,[startsec]
+    div ecx
+    mov edx, eax
+    pop eax
+	invoke printf, CStr(13,"Sector: %u (%u.%u%%)"), [cursec], eax, edx
 	pop eax
 protok_2:
 	test ah,1
@@ -3209,35 +3272,35 @@ endif
 	mov esi,offset timedif
 	lodsb
 	movzx eax,al
-	mov ecx,3600	   ;convert hours -> seconds
+	mov ecx,3600	;convert hours -> seconds
 	mul ecx
 	mov ebx,eax
 	lodsb
 	mov cl,60
-	mul cl			   ;minutes -> seconds
+	mul cl			;minutes -> seconds
 	movzx eax,ax
 	add ebx,eax
-	lodsb				   ;seconds
+	lodsb			;seconds
 	movzx eax,al
 	add ebx,eax
-	lodsb				   ;hsec
+	lodsb			;hsec
 	movzx eax,al
 	xchg ebx,eax
 	mov ecx,100
 	mul ecx
-	add ebx,eax 	   ;ebx=hsec
+	add ebx,eax 	;ebx=hsec
 
 	xor edx,edx
 	mov eax,[sectors]
 	mov ecx,512
-	mul ecx 		   ;-> bytes read in eax
+	mul ecx 		;-> bytes read in eax
 	and ebx,ebx
 	jz @F
-	div ebx 		   ;/ hsec -> read speed Bytes/hsec
+	div ebx 		;/ hsec -> read speed Bytes/hsec
 @@:
 	mov ecx,100
-	mul ecx 		   ;bytes/sec in eax
-	shr eax,10		   ;kbytes/sec
+	mul ecx 		;bytes/sec in eax
+	shr eax,10		;kbytes/sec
 
 	invoke printf, CStr("%u kB/sec",lf), eax
 
