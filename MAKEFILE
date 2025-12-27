@@ -5,8 +5,7 @@
 #   - idecheck: stub loadpex.bin ( contains HDPMI32 )
 #   - ideckvdd: import libraries dkrnl32, duser32 & ntvdm; win32 include files
 
-PGM=IDECHECK.ASM
-NAME=$(PGM:.ASM=)
+NAME=IDECHECK
 NAME2=IDECKVDD
 
 HXDIR=\hx
@@ -40,14 +39,14 @@ $(OUTDIR):
 $(OUTDIR)\$(NAME).exe: $(OUTDIR)\$(NAME).obj Makefile
 	@jwlink.exe $(LOPTD) format windows pe hx file $(OUTDIR)\$(NAME).obj op quiet,map=$(OUTDIR)\$(NAME).map, stub=$(HXDIR)\bin\LOADPEX.BIN, stack=0x1000, dosseg
 
-$(OUTDIR)\$(NAME).obj: $(NAME).asm
-	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) $(NAME).asm
+$(OUTDIR)\$(NAME).obj: src\$(NAME).asm
+	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) src\$(NAME).asm
 
-$(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile $(NAME2).lbc
-	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @$(NAME2).lbc
+$(OUTDIR)\$(NAME2).dll: $(OUTDIR)\$(NAME2).obj Makefile src\$(NAME2).lbc
+	@jwlink.exe $(LOPTD) format windows pe dll file $(OUTDIR)\$(NAME2).obj name $*.DLL $(LIBS2) op quiet,MAP=$(OUTDIR)\$(NAME2).map @src\$(NAME2).lbc
 
-$(OUTDIR)\$(NAME2).obj: $(NAME2).asm
-	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) -I$(HXDIR)\include $(NAME2).asm
+$(OUTDIR)\$(NAME2).obj: src\$(NAME2).asm
+	@jwasm.exe -nologo -coff -c -Fl$* -Fo$* -Sg $(AOPTD) -I$(HXDIR)\include src\$(NAME2).asm
 
 clean:
 	erase $(OUTDIR)\*.obj

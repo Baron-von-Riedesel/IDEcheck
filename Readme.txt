@@ -64,8 +64,9 @@
 
  4. History
  
+ 08/2025, 1.57: fixed: option /m may have caused a GPF.
  01/2025, 1.56: display percentage of read process done so far.
-       if an error occursand /IGN was set, temp. switch to 1 sector reads.
+       if an error occurs and /IGN is set, temp. switch to 1 sector reads.
  10/2022, 1.55: int 08/09 no longer intercepted.
        check for busmaster enabled in PCI command register for /DMA.
        fixed: IDE controller find procedure didn't find all controllers.

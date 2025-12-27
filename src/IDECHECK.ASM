@@ -168,7 +168,7 @@ DRVPARM ends
 
 ;*** constants
 
-szAbout db 'IDECHECK 1.56 (C) 1995-2025 Japheth',lf
+szAbout db 'IDECHECK 1.57 (C) 1995-2025 Japheth',lf
 	db 'usage: IDECHECK drive [ options ]',lf
 	db lf
 	db ' drive: HD number, starts with 0',lf
@@ -473,7 +473,7 @@ o_ign:
 	or byte ptr fCont,1
 	ret
 o_sgl:
-	mov byte ptr fMult,0
+	mov fMult,0
 	ret
 o_16:
 	mov byte ptr f32,0
@@ -664,6 +664,7 @@ parerr2:
 getparam endp
 
 ;--- set multi sector (for PIO)
+;--- AL=value set by /M:x
 
 setmult1 proc c
 
@@ -904,14 +905,14 @@ if 0
 	cmp al,'y'
 	jnz @B
 	invoke _crout
-endif
 setmult_1:
+endif
 	mov al,[reqmult]
 	call setmult1
 	jc setmult_ex
 	mov al,[reqmult]
 	mov [multsec],al
-	mov byte ptr fMult,1
+	mov fMult,1
 	movzx eax,al
 	invoke printf, CStr("multiple sectors set to %u",lf), eax
 	clc
@@ -1934,7 +1935,7 @@ noapio:
 	movzx ecx, word ptr [ebx+2*47]
 	movzx eax, cl
 	invoke printf, CStr("CFG  47=%4X: max. multiple sector value: %u",lf), ecx, eax
-	test byte ptr [fMult],1
+	test [fMult],1
 	jz nomultiple
 	mov ebx,offset configb
 	movzx ecx, word ptr [ebx+2*59]
@@ -1951,14 +1952,16 @@ noapio:
 	jmp parprot_2
 parprot_3:
 	invoke printf, CStr(" (invalid setting)",lf)
-	mov byte ptr fMult,0
-	cmp byte ptr [reqmult],0
+	mov fMult,0
+	cmp [reqmult],0
 	jnz parprot_2
 	invoke printf, CStr("won't use multiple sector read (try /M switch)",lf)
 parprot_2:
-	cmp byte ptr [reqmult],0
+	cmp [reqmult],0
 	jz nomultiple
+	push ebx
 	call setmult
+	pop ebx
 	jc parprot_ex
 nomultiple:
 
@@ -2272,7 +2275,12 @@ checkifescpressed_0:
 	jz checkifescpressed_ex
 	cli
 	push eax
-	mov AX,@flat:[BX+400h]
+if 0;def __JWASM__
+	mov AX,@flat:[BX+400h]   ; not accepted by Masm
+else
+	movzx ebx,bx
+	mov AX,@flat:[EBX+400h]
+endif
 	INC EBX
 	INC EBX
 	CMP BX,@flat:[ebufend]
@@ -2599,7 +2607,7 @@ readcore_2:
 	jmp setcmd
 @@:
 	mov al,0C4h 	   ;read multiple
-	test byte ptr fMult,1
+	test fMult,1
 	jnz setcmd
 	mov al,20h		   ;read single
 setcmd:
